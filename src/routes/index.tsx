@@ -63,6 +63,7 @@ type Batch = {
   done: number;
   failed: number;
   last_error: string | null;
+  failures?: { date: string | null; reason: string }[];
   elapsed_seconds: number;
   rate_per_second: number;
 };
@@ -795,6 +796,23 @@ function Home() {
               >
                 분류 중단
               </button>
+            </div>
+          )}
+          {batch && batch.failed > 0 && (
+            <div className="batch-errors" aria-live="polite">
+              <b>분류 실패 {num(batch.failed)}건</b>
+              {batch.failures?.length ? (
+                <ul>
+                  {batch.failures.map((failure, index) => (
+                    <li key={`${failure.date ?? "unknown"}-${index}`}>
+                      {failure.date && <strong>{failure.date}</strong>}
+                      <span>{failure.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>{batch.last_error ?? "오류 상세 정보가 없습니다."}</p>
+              )}
             </div>
           )}
           {(list?.total_days ?? 0) === 0 ? (

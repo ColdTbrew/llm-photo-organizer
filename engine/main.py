@@ -11,6 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from PIL import Image
+from PIL import Image, ImageOps
 from pydantic import BaseModel
 
 from engine.places import home_distance_km, nearby_place
@@ -193,7 +194,8 @@ class Review:
         self.next_id = 1
         self.lock = threading.RLock()
         self.scan: dict[str, Any] = {"state": "idle", "source": None, "scanned_files": 0, "found_media": 0, "error": None}
-        self.batch: dict[str, Any] = {"state": "idle", "total": 0, "done": 0, "failed": 0, "last_error": None}
+        self.batch: dict[str, Any] = {"state": "idle", "total": 0, "done": 0, "failed": 0,
+                                      "last_error": None, "failures": []}
         self.stop_batch = False
         self.home_location = ""
 
@@ -468,11 +470,26 @@ def check_file(root: Path, file: dict[str, Any]) -> Path:
 
 
 def image_data(path: Path) -> str:
-    if path.stat().st_size > MAX_IMAGE_BYTES:
-        fail("Image exceeds 25 MB")
-    mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
+    try:
+        with Image.open(path) as source:
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail((1024, 1024))
+            output = BytesIO()
+            image.convert("RGB").save(output, format="JPEG", quality=85)
+            data = output.getvalue()
+    except (OSError, ValueError):
+        try:
+            result = subprocess.run([
+                "ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1",
+                "-vf", "scale=1024:1024:force_original_aspect_ratio=decrease",
+                "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+            ], capture_output=True, timeout=30, check=True)
+            data = result.stdout
+        except (OSError, subprocess.SubprocessError):
+            fail("이미지를 읽을 수 없습니다")
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        fail("이미지를 25MB 이하로 줄일 수 없습니다")
+    return f"data:image/jpeg;base64,{base64.b64encode(data).decode('ascii')}"
 
 
 def video_data(path: Path) -> str:
@@ -780,8 +797,14 @@ def create_app(settings: Settings) -> FastAPI:
                 response = client.post(f"{settings.model_api}/chat/completions", json=body)
                 response.raise_for_status()
                 raw = str(response.json()["choices"][0]["message"]["content"] or "")
-        except (httpx.HTTPError, KeyError, IndexError, ValueError):
-            fail("Model request failed or returned an invalid response", 502)
+        except httpx.TimeoutException:
+            fail("모델 응답 시간이 초과됐습니다", 502)
+        except httpx.HTTPStatusError as error:
+            fail(f"모델 서버 HTTP {error.response.status_code}", 502)
+        except httpx.RequestError:
+            fail("모델 서버에 연결할 수 없습니다", 502)
+        except (KeyError, IndexError, ValueError):
+            fail("모델 응답 형식이 올바르지 않습니다", 502)
         base_category, visual_place, visual_evidence = model_fields(raw)
         if gps_place or len(places) > 1:
             visual_place = visual_evidence = None
@@ -824,7 +847,8 @@ def create_app(settings: Settings) -> FastAPI:
             if not queue:
                 fail("No unclassified days remain")
             review.batch = {"state": "running", "total": len(queue), "done": 0, "failed": 0,
-                            "last_error": None, "_started_at": time.monotonic(), "_finished_at": None}
+                            "last_error": None, "failures": [],
+                            "_started_at": time.monotonic(), "_finished_at": None}
             review.stop_batch = False
 
         def work() -> None:
@@ -839,7 +863,11 @@ def create_app(settings: Settings) -> FastAPI:
                 except Exception as error:
                     with review.lock:
                         review.batch["failed"] += 1
-                        review.batch["last_error"] = error.detail if isinstance(error, HTTPException) else "Classification failed"
+                        reason = error.detail if isinstance(error, HTTPException) else "분류 중 오류가 발생했습니다"
+                        review.batch["last_error"] = reason
+                        day = review.by_id.get(day_id)
+                        review.batch["failures"].append({"date": day["date"] if day else None,
+                                                         "reason": reason})
                 finally:
                     with review.lock:
                         review.batch["done"] += 1

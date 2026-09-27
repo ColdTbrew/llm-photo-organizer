@@ -283,6 +283,12 @@ button:disabled { cursor: not-allowed; }
 .batch-bar b, .batch-progress b { color: #355d46; font-size: 12px; }
 .batch-bar span, .batch-progress span { margin-top: 3px; color: #64776b; font-size: 11px; }
 .batch-progress progress { flex: 1; min-width: 160px; height: 10px; accent-color: #4f8a65; }
+.batch-errors { margin-bottom: 12px; padding: 13px 16px; border: 1px solid #e8c9bf; border-radius: 8px; background: #fff8f5; color: #783d31; font-size: 12px; }
+.batch-errors b { display: block; margin-bottom: 7px; }
+.batch-errors ul { max-height: 180px; overflow: auto; margin: 0; padding: 0; list-style: none; }
+.batch-errors li { display: flex; gap: 12px; padding: 5px 0; border-top: 1px solid #f0ddd6; }
+.batch-errors li strong { flex: 0 0 82px; }
+.batch-errors p { margin: 0; }
 .detail-tools { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 @media (max-width: 570px) { .batch-progress .button, .detail-tools .button { width: 100%; } }
 @media (max-width: 760px) {
