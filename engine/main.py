@@ -136,6 +136,7 @@ class Settings:
     port: int = 8040
     home_settings: Path | None = None
     date_year_correction: tuple[str, int, int] | None = None
+    ui_origin: str = "http://127.0.0.1:3000"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -533,7 +534,7 @@ def create_app(settings: Settings) -> FastAPI:
     review = Review()
     review.photo_root = settings.photo_root
     review.home_location = read_home(settings.home_settings)
-    app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
+    app.add_middleware(CORSMiddleware, allow_origins=[settings.ui_origin, "http://localhost:3000"],
                        allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
     @app.get("/health")

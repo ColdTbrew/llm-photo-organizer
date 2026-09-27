@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "vite dev --host 127.0.0.1 --port 3000",
     "engine": "uv run python -m engine.main",
-    "engine:check": "uv run python -m unittest discover -s tests -v",
+    "test:e2e": "playwright test",
     "generate-routes": "tsr generate",
     "build": "vite build",
     "preview": "vite preview"
@@ -25,6 +25,7 @@
     "tailwindcss": "^4.1.18"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tanstack/devtools-vite": "latest",
     "@tanstack/router-cli": "^1.132.0",
     "@types/node": "^22.10.2",
