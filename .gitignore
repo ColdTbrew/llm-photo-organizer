@@ -1,4 +1,11 @@
 node_modules
+.venv/
+.python-version.local
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .DS_Store
 dist
 dist-ssr
@@ -8,6 +15,7 @@ dist-ssr
 !.env.example
 !engine/.env.example
 engine/.env
+engine/.local-settings*
 data/
 *.sqlite
 *.sqlite-shm
@@ -29,6 +37,7 @@ data/
 *.mkv
 *.webm
 target/
+uv-cache/
 .cta.json
 .nitro
 .tanstack

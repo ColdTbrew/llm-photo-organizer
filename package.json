@@ -7,8 +7,8 @@
   },
   "scripts": {
     "dev": "vite dev --host 127.0.0.1 --port 3000",
-    "engine": "cargo run -p llm-photo-organizer-engine",
-    "engine:check": "cargo check -p llm-photo-organizer-engine",
+    "engine": "uv run python -m engine.main",
+    "engine:check": "uv run python -m unittest discover -s tests -v",
     "generate-routes": "tsr generate",
     "build": "vite build",
     "preview": "vite preview"

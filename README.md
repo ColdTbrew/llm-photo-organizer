@@ -1,67 +1,99 @@
 # LLM Photo Organizer
 
-Local-first photo and video review app for external drives. The UI is built with TanStack Start; file-system access, media processing, vLLM calls, and approved moves belong in the Rust engine. X31 is the default drive on the development Mac, configured locally.
+**몇만 장의 사진과 영상을 날짜별로 검토하고, 직접 승인한 경로로만 정리하는 로컬 웹앱.**
 
-## Architecture
+TanStack Start와 React가 검토 화면을, Python·FastAPI·uv가 폴더 탐색, 메타데이터 추출, MiniCPM-V-4.6 호출, 승인된 파일 이동을 담당합니다. 원본 파일명은 바꾸지 않습니다.
 
-```text
-web (TanStack Start + React + TypeScript)
-        │ JSON API on localhost:8040
-        ▼
-engine (Rust + Axum)
-        ├── reads selected folders from /Volumes/X31
-        ├── sends selected media to a configured vLLM API for classification
-        └── moves files only after a day and its destination are approved
+> **선택 → 탐색 → 날짜별 분류 → 폴더명 편집 → 경로 승인 → 이동 실행**
+> 폴더 선택이나 AI 분류만으로는 파일이 이동하지 않습니다.
+
+## 화면 미리보기
+
+아래 화면은 개인 미디어 대신 **임시 폴더에 만든 가상 이미지 12장**으로 캡처했습니다. 실제 드라이브의 사진, 경로, 모델 주소는 포함하지 않았습니다.
+
+### 원본 폴더 선택과 탐색
+
+왼쪽 워크스페이스에서 폴더를 고르거나 **스캔할 폴더 칸**을 눌러 macOS 폴더 선택창을 열 수 있습니다. 선택 후 **선택한 폴더 스캔**을 눌러야 하위 폴더까지 재귀적으로 읽습니다.
+
+![원본 폴더 선택과 탐색 화면](docs/screenshots/folder-selection.jpg)
+
+### 날짜별 검토
+
+날짜 목록에서 각 날짜의 제안 폴더명을 확인하고 수정할 수 있습니다. 대표 미디어를 본 뒤 날짜 전체에 적용할 카테고리를 저장합니다.
+
+![날짜별 미디어와 카테고리 편집 화면](docs/screenshots/date-review.jpg)
+
+### 월 필터
+
+브라우저 기본 달력 대신 연도 이동과 12개월을 한눈에 볼 수 있는 선택창을 사용합니다. 필터를 바꾸어도 스캔이나 파일 이동은 일어나지 않습니다.
+
+![연도와 월을 고르는 필터](docs/screenshots/month-filter.jpg)
+
+## 동작 방식
+
+| 단계 | 사용자가 확인하는 것 | 파일에 미치는 영향 |
+| --- | --- | --- |
+| **1. 원본 선택** | macOS 선택창 또는 워크스페이스의 폴더 | 없음 |
+| **2. 탐색** | 선택 폴더의 하위 미디어, 날짜, 스캔 속도 | 읽기만 함 |
+| **3. 날짜별 AI 분류** | 대표 이미지·영상, 장소 근거, 제안 카테고리 | 없음 |
+| **4. 폴더명 편집** | `YYYY/YYYY_MM/YYMMDD_카테고리/` 또는 해당 날짜의 기존 폴더 | 없음 |
+| **5. 경로 승인** | 이동할 대상 경로 | 없음 |
+| **6. 이동 실행** | 승인한 날짜의 파일 | 이 단계에서만 이동 |
+
+각 날짜는 하나의 카테고리를 가집니다. AI는 날짜 전체에서 고른 대표 파일 최대 6개를 한 번에 보고 제안하며, 영상은 요청당 최대 32프레임으로 제한합니다. 날짜 안에 서로 다른 내용이 섞여 있을 수 있으므로 미리보기와 제안 경로를 확인해야 합니다. 분류 결과는 경로를 승인하지 않습니다. 승인 후 카테고리나 폴더명을 바꾸면 승인이 해제됩니다.
+
+사진의 EXIF와 지원되는 영상 위치 태그에서 GPS를 읽습니다. **집 기준 지역**을 UI에서 입력하면 GPS와 함께 모델 문맥에 전달해 장소와 여행 카테고리를 제안하는 데 활용합니다. GPS가 없더라도 표지판이나 뚜렷한 랜드마크가 보이면 AI가 장소를 추정할 수 있으며, 화면에 추정 근거를 표시합니다. 집에서 멀다는 사실만으로 여행을 확정하지는 않습니다. 장소 힌트는 로컬 [지명 자료](engine/PLACES.md)를 사용합니다.
+
+대용량 목록을 위해 날짜는 **30개씩**, 선택 날짜의 파일은 **24개씩** 불러옵니다. 날짜별 AI 일괄 분류에는 진행률, 실패 수, 처리 속도가 표시되고 현재 요청이 끝난 뒤 중지할 수 있습니다. 스캔 속도는 파일/초, AI 속도는 날짜/초로 표시됩니다.
+
+## 로컬 실행
+
+### 준비물
+
+- Node.js 20 이상, npm
+- Python 3.12 이상, [uv](https://docs.astral.sh/uv/)
+- `ffmpeg`, `ffprobe` (영상 프레임과 메타데이터)
+- JSON 스키마 응답을 지원하는 OpenAI 호환 MiniCPM-V-4.6 vLLM 서버
+
+```sh
+npm install
+uv sync
+cp engine/.env.example engine/.env
 ```
 
-The app groups media by day and proposes `YYYY/YYYY_MM/YYMMDD_category/`. A classification result only suggests a category. Reviewing or approving a folder does not move anything; moving is a separate action.
+`engine/.env`의 `PHOTO_ROOT`에 선택 가능한 폴더의 상위 경로를 설정합니다. 외장하드 이름 **X31은 이 드라이브 설정에서만** 사용합니다. `MODEL_API`에는 본인이 쓰는 vLLM 주소를 입력합니다. 이 파일은 Git에서 제외됩니다.
 
-## Requirements
+터미널 두 개에서 각각 실행합니다.
 
-- Node.js 20+ and npm
-- Rust 1.85+ (edition 2024)
-- `ffmpeg` and `ffprobe` for video frame extraction (up to 32 frames/request)
-- X31 mounted at `/Volumes/X31` (or set `PHOTO_ROOT`)
-- OpenAI-compatible vLLM API (local example default `http://127.0.0.1:8000/v1`)
-
-## Local development
-
-Install the UI dependencies with `npm install`, then run both processes in separate terminals from the project root:
+```sh
+npm run engine
+```
 
 ```sh
 npm run dev
 ```
 
-```sh
-cargo run -p llm-photo-organizer-engine
-```
+브라우저에서 [http://127.0.0.1:3000](http://127.0.0.1:3000)을 엽니다. 기본 엔진 주소는 `127.0.0.1:8040`입니다. 로컬 테스트는 실제 드라이브 대신 임시 샘플 폴더를 `PHOTO_ROOT`로 지정해 실행합니다.
 
-Open <http://127.0.0.1:3000>. The Rust API listens on `127.0.0.1:8040` by default and allows browser requests from the local development UI only.
-
-## Configuration
-
-| Variable | Default | Used by |
+| 설정 | 기본값 | 용도 |
 | --- | --- | --- |
-| `PHOTO_ROOT` | `/Volumes/X31` | Rust engine |
-| `MODEL_API` | `http://127.0.0.1:8000/v1` | Rust engine |
-| `MODEL_NAME` | `openbmb/MiniCPM-V-4.6` | Rust engine |
-| `ENGINE_BIND` | `127.0.0.1` | Rust engine; keep local-only for a single-user app |
-| `ENGINE_PORT` | `8040` | Rust engine |
-| `VITE_ENGINE_ORIGIN` | `http://127.0.0.1:8040` | Browser UI |
+| `PHOTO_ROOT` | 필수 | 선택 가능한 원본 폴더의 상위 경로 |
+| `MODEL_API` | `http://127.0.0.1:8000/v1` | OpenAI 호환 vLLM API 기본 주소 |
+| `MODEL_NAME` | `openbmb/MiniCPM-V-4.6` | 모델 이름 |
+| `ENGINE_BIND` / `ENGINE_PORT` | `127.0.0.1` / `8040` | 로컬 엔진 주소 |
+| `VITE_ENGINE_ORIGIN` | `http://127.0.0.1:8040` | 브라우저에서 접근하는 엔진 주소 |
 
-Generic engine settings are in [engine/.env.example](engine/.env.example). Keep personal API addresses in the ignored `engine/.env` file; Rust reads environment variables directly, so load local settings before launching it:
+## 확인과 주의사항
 
 ```sh
-set -a
-source engine/.env
-set +a
-cargo run -p llm-photo-organizer-engine
+npm run engine:check
+npx tsc --noEmit
+npm run build
 ```
 
-## Privacy and repository hygiene
+- 디렉터리 링크와 선택한 원본 밖으로 이어지는 경로는 탐색하지 않습니다. 이동 직전에도 원본과 대상 경로를 다시 확인합니다.
+- 검토, 스캔, 분류 진행 상태는 현재 엔진의 메모리에 있습니다. 엔진을 재시작하면 다시 탐색해야 합니다. 이동 중 파일시스템 오류가 나면 폴더를 직접 확인한 후 재시도하세요.
+- 집 기준 지역은 Git에서 제외되는 `engine/.local-settings.json`에 저장됩니다. API 주소, 개인 설정, 미디어 및 생성 데이터도 Git에 포함하지 않습니다.
+- 실제 외장 드라이브의 자동 탐색이나 이동은 하지 않습니다. 퍼블릭 저장소 생성과 push는 별도 공개 승인 후에만 진행합니다.
 
-Personal media, local network addresses, local environment files, generated data, and Rust build output are excluded from Git. The public source repository should contain code and generic sample configuration only. Photos are never uploaded as part of repository publishing; a selected image or extracted video frame is sent to the configured inference endpoint only when the user requests analysis.
-
-## Project status
-
-Initial scaffold: TanStack Start is initialized, the Rust/Axum workspace and local configuration surface are in place, and the dashboard currently shows engine and drive discovery status. Recursive scanning, day-level and per-image classification, review persistence, and approved moves are the next implementation steps. No X31 scan or file move runs automatically.
+UI 구성과 검토 기준은 [DESIGN.md](DESIGN.md)에 정리했습니다.
