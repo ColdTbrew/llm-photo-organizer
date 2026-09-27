@@ -15,6 +15,7 @@ type Media = {
   relative_path: string;
   kind: "image" | "video";
   captured_at: string;
+  original_captured_at: string | null;
   size: number;
   gps: { latitude: number; longitude: number } | null;
   gps_place: string | null;
@@ -24,6 +25,7 @@ type Day = {
   id: number;
   date: string;
   file_count: number;
+  corrected_files: number;
   sample_count: number;
   suggested_category: string | null;
   edited_category: string | null;
@@ -64,7 +66,7 @@ type Batch = {
   elapsed_seconds: number;
   rate_per_second: number;
 };
-type Filter = "all" | "pending" | "approved" | "moved";
+type Filter = "all" | "unclassified" | "pending" | "approved" | "moved";
 
 const ENGINE_ORIGIN =
   import.meta.env.VITE_ENGINE_ORIGIN ?? "http://127.0.0.1:8040";
@@ -680,6 +682,7 @@ function Home() {
               {(
                 [
                   ["all", "전체"],
+                  ["unclassified", "AI 미분류"],
                   ["pending", "승인 대기"],
                   ["approved", "승인됨"],
                   ["moved", "이동 완료"],
@@ -828,7 +831,12 @@ function Home() {
                       >
                         <span>
                           <b>{dateLabel(item.date)}</b>
-                          <small>{num(item.file_count)}개 파일</small>
+                          <small>
+                            {num(item.file_count)}개 · {item.suggested_category
+                              ? "AI 완료"
+                              : item.edited_category ? "직접 입력" : "AI 미분류"}
+                            {item.corrected_files > 0 && " · 날짜 보정"}
+                          </small>
                           <code className="date-folder-name" title={dayCategory(item)
                             ? pathFor(item.date, dayCategory(item))
                             : "카테고리를 입력하면 경로가 정해집니다."}>
@@ -948,6 +956,7 @@ function Home() {
                           전체 {num(day.file_count)}개 · {day.sample_count > 0
                             ? `AI 대표 ${num(day.sample_count)}개 사용`
                             : "날짜 카테고리 미분류"}
+                          {day.corrected_files > 0 && ` · 날짜 보정 ${num(day.corrected_files)}개`}
                         </p>
                       </div>
                       <span
@@ -1013,6 +1022,9 @@ function Home() {
                                   {file.kind === "video" ? "영상" : "이미지"} ·{" "}
                                   {file.captured_at}
                                 </span>
+                                {file.original_captured_at && (
+                                  <span>원본 시각 {file.original_captured_at}</span>
+                                )}
                                 {file.gps && (
                                   <span>
                                     GPS {file.gps.latitude.toFixed(4)}, {file.gps.longitude.toFixed(4)}

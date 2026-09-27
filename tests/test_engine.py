@@ -72,6 +72,54 @@ class EngineTests(unittest.TestCase):
         self.assertEqual({file["relative_path"] for file in files}, {"sample.jpg", "level-one/level-two/deep.jpg"})
         self.assertTrue((self.root / "other" / "private.jpg").exists())
 
+    def test_mixed_dji_dates_and_source_scoped_year_correction(self) -> None:
+        (self.root / "chosen" / "sample.jpg").unlink()
+        for date, sequence in (("2000:04:10 23:31:55", "0001"),
+                               ("2000:04:11 09:12:00", "0002")):
+            exif = Image.Exif()
+            exif[36867] = date
+            filename = f"DJI_{date.replace(':', '').replace(' ', '')}_{sequence}_D.JPG"
+            Image.new("RGB", (16, 16), "red").save(self.root / "chosen" / filename, exif=exif)
+        (self.root / "chosen" / "DJI_20000410233230_0004_D.MP4").write_bytes(b"temporary video")
+        (self.root / "chosen" / "DJI_20000411091300_0005_D.MP4").write_bytes(b"temporary video")
+        self.client.close()
+        self.client = TestClient(create_app(Settings(
+            photo_root=self.root,
+            home_settings=self.root / ".home.json",
+            date_year_correction=("chosen", 2000, 2026),
+        )))
+
+        def fake_probe(path: Path, fields: str) -> str | None:
+            if fields == "format_tags=creation_time":
+                return ("2000-04-10T23:32:31Z" if "20000410" in path.name
+                        else "2000-04-11T09:13:01Z")
+            return None
+
+        with patch("engine.main.probe", side_effect=fake_probe):
+            self.scan()
+        days = self.client.get("/api/days").json()
+        self.assertEqual([(day["date"], day["file_count"], day["corrected_files"])
+                          for day in days["items"]],
+                         [("2026-04-11", 2, 2), ("2026-04-10", 2, 2)])
+        files = self.client.get(f"/api/days/{days['items'][1]['id']}/files").json()["items"]
+        self.assertEqual({file["kind"] for file in files}, {"image", "video"})
+        self.assertTrue(all(file["captured_at"].startswith("2026-04-10") for file in files))
+        self.assertTrue(all(file["original_captured_at"].startswith("2000-04-10") for file in files))
+        self.assertEqual(days["pending_days"], 2)
+        self.assertEqual(self.client.get("/api/days", params={"status": "unclassified"}).json()["total"], 2)
+        self.client.post("/api/category", json={"day_id": days["items"][1]["id"], "category": "일상"})
+        self.assertEqual(self.client.get("/api/days", params={"status": "unclassified"}).json()["total"], 1)
+        self.assertTrue((self.root / "chosen" / "DJI_20000410233230_0004_D.MP4").exists())
+
+        exif = Image.Exif()
+        exif[36867] = "2000:04:10 10:00:00"
+        Image.new("RGB", (16, 16), "blue").save(
+            self.root / "other" / "DJI_20000410100000_0001_D.JPG", exif=exif)
+        self.scan("other")
+        other_dates = {day["date"] for day in self.client.get("/api/days").json()["items"]}
+        self.assertIn("2000-04-10", other_dates)
+        self.assertNotIn("2026-04-10", other_dates)
+
     def test_native_folder_pick_does_not_scan_until_requested(self) -> None:
         with tempfile.TemporaryDirectory(prefix="llm-photo-picked-") as directory:
             folder = Path(directory) / "picked"

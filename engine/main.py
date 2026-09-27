@@ -135,11 +135,16 @@ class Settings:
     bind: str = "127.0.0.1"
     port: int = 8040
     home_settings: Path | None = None
+    date_year_correction: tuple[str, int, int] | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
         load_dotenv(ENGINE_DIR / ".env")
         root = os.getenv("PHOTO_ROOT")
+        correction = os.getenv("DATE_YEAR_CORRECTION", "")
+        match = re.fullmatch(r"([^:/]+):(\d{4}):(\d{4})", correction) if correction else None
+        if correction and not match:
+            raise ValueError("DATE_YEAR_CORRECTION must be folder:from_year:to_year")
         return cls(
             photo_root=Path(root).expanduser() if root else None,
             model_api=os.getenv("MODEL_API", cls.model_api).rstrip("/"),
@@ -147,6 +152,7 @@ class Settings:
             bind=os.getenv("ENGINE_BIND", cls.bind),
             port=int(os.getenv("ENGINE_PORT", str(cls.port))),
             home_settings=ENGINE_DIR / ".local-settings.json",
+            date_year_correction=(match.group(1), int(match.group(2)), int(match.group(3))) if match else None,
         )
 
 
@@ -303,22 +309,46 @@ def probe(path: Path, fields: str) -> str | None:
         return None
 
 
+def dji_filename_date(path: Path) -> datetime | None:
+    match = re.fullmatch(r"DJI_(\d{14})_\d+_[A-Za-z0-9]+", path.stem, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
 def captured_at(path: Path, kind: str, mtime: float) -> datetime:
+    filename_date = dji_filename_date(path)
     if kind == "image":
         date = image_date(path)
         if date:
             return date
+        if filename_date:
+            return filename_date
     else:
         raw = probe(path, "format_tags=creation_time")
         if raw:
             try:
-                return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+                timestamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                local_date = timestamp.astimezone().replace(tzinfo=None)
+                # Some DJI videos tag local clock time as UTC; the filename shows which clock matches.
+                if filename_date and min(
+                    abs((filename_date - local_date).total_seconds()),
+                    abs((filename_date - timestamp.replace(tzinfo=None)).total_seconds()),
+                ) <= 300:
+                    return filename_date
+                return local_date
             except ValueError:
                 pass
+        if filename_date:
+            return filename_date
     return datetime.fromtimestamp(mtime)
 
 
-def scan_folder(folder: Path, progress: Any = None) -> list[dict[str, Any]]:
+def scan_folder(folder: Path, progress: Any = None,
+                year_correction: tuple[int, int] | None = None) -> list[dict[str, Any]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     scanned = 0
     found = 0
@@ -343,11 +373,18 @@ def scan_folder(folder: Path, progress: Any = None) -> list[dict[str, Any]]:
             except OSError:
                 fail("Could not read media metadata")
             date = captured_at(path, kind, meta.st_mtime)
+            original_date = date if year_correction and date.year == year_correction[0] else None
+            if original_date:
+                try:
+                    date = date.replace(year=year_correction[1])
+                except ValueError:
+                    original_date = None
             gps = image_gps(path) if kind == "image" else video_gps(path)
             gps_place = nearby_place(gps["latitude"], gps["longitude"]) if gps else None
             groups.setdefault(date.strftime("%Y-%m-%d"), []).append({
                 "id": 0, "name": name, "relative_path": str(path.relative_to(folder)),
                 "kind": kind, "captured_at": date.strftime("%Y-%m-%d %H:%M:%S"),
+                "original_captured_at": original_date.strftime("%Y-%m-%d %H:%M:%S") if original_date else None,
                 "size": meta.st_size, "gps": gps, "gps_place": gps_place,
                 "sampled": False,
                 "_path": path, "_mtime_ns": meta.st_mtime_ns,
@@ -365,7 +402,13 @@ def scan_folder(folder: Path, progress: Any = None) -> list[dict[str, Any]]:
 
 def day_summary(day: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in day.items() if key != "files" and not key.startswith("_")} | {
-        "file_count": len(day["files"])}
+        "file_count": len(day["files"]),
+        "corrected_files": sum(bool(file.get("original_captured_at")) for file in day["files"])}
+
+
+def needs_classification(day: dict[str, Any]) -> bool:
+    return not (day["suggested_category"] or day["edited_category"] or
+                day["approved_category"] or day["moved"])
 
 
 def public_file(file: dict[str, Any]) -> dict[str, Any]:
@@ -582,7 +625,9 @@ def create_app(settings: Settings) -> FastAPI:
 
         def work() -> None:
             try:
-                days = scan_folder(folder, progress)
+                rule = settings.date_year_correction
+                correction = (rule[1], rule[2]) if rule and folder == root / rule[0] else None
+                days = scan_folder(folder, progress, correction)
                 with review.lock:
                     review.photo_root = root
                     review.scanned_folder = folder
@@ -613,12 +658,13 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/api/days")
     def get_days(page: int = Query(1, ge=1), page_size: int = Query(30, ge=1, le=100),
-                 status: str = Query("all", pattern="^(all|pending|approved|moved)$"),
+                 status: str = Query("all", pattern="^(all|unclassified|pending|approved|moved)$"),
                  month: str = Query("", pattern="^$|^[0-9]{4}-[0-9]{2}$")) -> dict[str, Any]:
         with review.lock:
             all_days = review.days
             filtered = [day for day in all_days if (not month or day["date"].startswith(month)) and (
-                status == "all" or status == "pending" and not day["approved_category"] or
+                status == "all" or status == "unclassified" and needs_classification(day) or
+                status == "pending" and not day["approved_category"] or
                 status == "approved" and bool(day["approved_category"]) and not day["moved"] or
                 status == "moved" and day["moved"])]
             start = (page - 1) * page_size
@@ -628,8 +674,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "total_days": len(all_days),
                 "total_files": sum(len(day["files"]) for day in all_days),
                 "classified_days": sum(bool(day["suggested_category"]) for day in all_days),
-                "unclassified_days": sum(not day["suggested_category"] and not day["edited_category"]
-                                         and not day["approved_category"] and not day["moved"] for day in all_days),
+                "unclassified_days": sum(needs_classification(day) for day in all_days),
                 "pending_days": sum(not day["approved_category"] for day in all_days),
                 "moved_files": sum(len(day["files"]) for day in all_days if day["moved"]),
             }
@@ -774,8 +819,7 @@ def create_app(settings: Settings) -> FastAPI:
         with review.lock:
             if review.scan["state"] == "running" or review.batch["state"] == "running":
                 fail("Wait for the current job to finish", 409)
-            queue = [day["id"] for day in review.days if not day["moved"] and not day["approved_category"]
-                     and not day["suggested_category"] and not day["edited_category"]]
+            queue = [day["id"] for day in review.days if needs_classification(day)]
             if not queue:
                 fail("No unclassified days remain")
             review.batch = {"state": "running", "total": len(queue), "done": 0, "failed": 0,
