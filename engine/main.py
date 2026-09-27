@@ -19,7 +19,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
@@ -730,7 +730,7 @@ def create_app(settings: Settings) -> FastAPI:
         return {"items": sorted(items, key=lambda item: item["name"].casefold())}
 
     @app.get("/api/preview/{day_id}/{file_id}")
-    def preview(day_id: int, file_id: int) -> Response:
+    def preview(day_id: int, file_id: int, large: bool = False) -> Response:
         with review.lock:
             day = find_day(review, day_id)
             if day["moved"]:
@@ -740,7 +740,8 @@ def create_app(settings: Settings) -> FastAPI:
         try:
             result = subprocess.run([
                 "ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1",
-                "-vf", "scale=320:-2,format=yuvj420p", "-f", "image2pipe", "-vcodec", "mjpeg",
+                "-vf", f"scale={1600 if large else 320}:-2,format=yuvj420p",
+                "-f", "image2pipe", "-vcodec", "mjpeg",
                 "-threads:v", "1", "pipe:1",
             ], capture_output=True, timeout=30, check=True)
         except (OSError, subprocess.SubprocessError):
@@ -748,6 +749,20 @@ def create_app(settings: Settings) -> FastAPI:
         if not result.stdout or len(result.stdout) > 5_000_000:
             fail("Could not create preview")
         return Response(result.stdout, media_type="image/jpeg")
+
+    @app.get("/api/media/{day_id}/{file_id}")
+    def media(day_id: int, file_id: int) -> FileResponse:
+        with review.lock:
+            day = find_day(review, day_id)
+            if day["moved"]:
+                fail("Day has already moved")
+            file = find_file(day, file_id).copy()
+        path = check_file(root_path(review.photo_root), file)
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return FileResponse(
+            path, media_type=mime,
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     def classify_day(day_id: int) -> dict[str, Any]:
         with review.lock:

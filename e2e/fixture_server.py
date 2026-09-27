@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import signal
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -23,6 +24,12 @@ def main() -> None:
         photo(root / "mixed" / "DJI_20000410100000_0001_D.JPG", "2000:04:10 10:00:00")
         photo(root / "mixed" / "nested" / "DJI_20000410110000_0002_D.JPG", "2000:04:10 11:00:00")
         photo(root / "mixed" / "DJI_20000411090000_0003_D.JPG", "2000:04:11 09:00:00")
+        photo(root / "mixed" / "DJI_20000411100000_0005_D.TIFF", "2000:04:11 10:00:00")
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=#547a97:s=64x64:r=24",
+            "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            str(root / "mixed" / "DJI_20000412103000_0004_D.MP4"),
+        ], check=True)
         photo(root / "outside" / "private.jpg", "2026:04:11 12:00:00")
         app = create_app(Settings(
             photo_root=root,

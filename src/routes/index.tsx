@@ -152,6 +152,14 @@ function Home() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [viewer, setViewer] = useState<{ dayId: number; file: Media } | null>(null);
+  const viewerRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = viewerRef.current;
+    if (viewer && dialog && !dialog.open) dialog.showModal();
+    if (!viewer && dialog?.open) dialog.close();
+  }, [viewer]);
 
   useEffect(() => {
     if (!monthPickerOpen) return;
@@ -1024,32 +1032,19 @@ function Home() {
                                   ✓
                                 </span>
                               ) : (
-                                <img
-                                  className="media-preview"
-                                  src={`${ENGINE_ORIGIN}/api/preview/${day.id}/${file.id}`}
-                                  alt={`${file.name} 미리보기`}
-                                  loading="lazy"
-                                />
-                              )}
-                              <div className="media-details">
-                                <b title={file.name}>{file.name}</b>
-                                {file.relative_path !== file.name && (
-                                  <small title={file.relative_path}>{file.relative_path}</small>
-                                )}
-                                <span>
-                                  {file.kind === "video" ? "영상" : "이미지"} ·{" "}
-                                  {file.captured_at}
-                                </span>
-                                {file.original_captured_at && (
-                                  <span>원본 시각 {file.original_captured_at}</span>
-                                )}
-                                {file.gps && (
-                                  <span>
-                                    GPS {file.gps.latitude.toFixed(4)}, {file.gps.longitude.toFixed(4)}
-                                    {file.gps_place ? ` · GPS 가까운 지역: ${file.gps_place}` : ""}
+                                <button type="button" className="media-open"
+                                  aria-label={`${file.name} ${file.kind === "video" ? "재생" : "보기"}`}
+                                  onClick={() => setViewer({ dayId: day.id, file })}>
+                                  <span className="media-thumb">
+                                    <img className="media-preview"
+                                      src={`${ENGINE_ORIGIN}/api/preview/${day.id}/${file.id}`}
+                                      alt="" loading="lazy" />
+                                    {file.kind === "video" && <span className="media-play-icon" aria-hidden="true">▶</span>}
                                   </span>
-                                )}
-                              </div>
+                                  <MediaDetails file={file} />
+                                </button>
+                              )}
+                              {day.moved && <MediaDetails file={file} />}
                               {file.sampled && <div className="media-action"><span className="category-chip has-category">AI 대표</span></div>}
                             </li>
                         ))}
@@ -1205,6 +1200,52 @@ function Home() {
           )}
         </div>
       </section>
+      <dialog ref={viewerRef} className="media-dialog" aria-label="미디어 보기"
+        onClose={() => setViewer(null)}
+        onClick={(event) => { if (event.target === event.currentTarget) event.currentTarget.close(); }}>
+        {viewer && (
+          <div className="media-dialog-content">
+            <header className="media-dialog-header">
+              <div>
+                <strong title={viewer.file.name}>{viewer.file.name}</strong>
+                <small>{viewer.file.kind === "video" ? "영상" : "이미지"} · {viewer.file.captured_at}</small>
+              </div>
+              <button type="button" className="media-dialog-close" aria-label="미디어 닫기"
+                onClick={() => viewerRef.current?.close()}>×</button>
+            </header>
+            <div className="media-dialog-stage">
+              {viewer.file.kind === "video" ? (
+                <video key={`${viewer.dayId}-${viewer.file.id}`} controls playsInline preload="metadata"
+                  poster={`${ENGINE_ORIGIN}/api/preview/${viewer.dayId}/${viewer.file.id}`}
+                  src={`${ENGINE_ORIGIN}/api/media/${viewer.dayId}/${viewer.file.id}`} />
+              ) : (
+                <img src={viewableImage(viewer.file.name)
+                  ? `${ENGINE_ORIGIN}/api/media/${viewer.dayId}/${viewer.file.id}`
+                  : `${ENGINE_ORIGIN}/api/preview/${viewer.dayId}/${viewer.file.id}?large=true`}
+                  alt={viewer.file.name} />
+              )}
+            </div>
+            {viewer.file.relative_path !== viewer.file.name && (
+              <p className="media-dialog-path">{viewer.file.relative_path}</p>
+            )}
+          </div>
+        )}
+      </dialog>
     </main>
   );
+}
+
+function viewableImage(name: string): boolean {
+  return /\.(jpe?g|png|webp)$/i.test(name);
+}
+
+function MediaDetails({ file }: { file: Media }) {
+  return <span className="media-details">
+    <b title={file.name}>{file.name}</b>
+    {file.relative_path !== file.name && <small title={file.relative_path}>{file.relative_path}</small>}
+    <span>{file.kind === "video" ? "영상" : "이미지"} · {file.captured_at}</span>
+    {file.original_captured_at && <span>원본 시각 {file.original_captured_at}</span>}
+    {file.gps && <span>GPS {file.gps.latitude.toFixed(4)}, {file.gps.longitude.toFixed(4)}
+      {file.gps_place ? ` · GPS 가까운 지역: ${file.gps_place}` : ""}</span>}
+  </span>;
 }
