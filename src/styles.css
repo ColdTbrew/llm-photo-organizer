@@ -228,6 +228,8 @@ button:disabled { cursor: not-allowed; }
 .scan-progress b, .scan-progress small { display: block; }
 .scan-progress b { font-size: 12px; }
 .scan-progress small { margin-top: 2px; font-size: 11px; }
+.scan-progress .scan-stop { flex: none; margin-left: auto; border-color: #c8d5ca; background: #fff; color: #355d46; }
+@media (max-width: 570px) { .scan-progress { flex-wrap: wrap; } .scan-progress .scan-stop { width: 100%; margin-left: 0; } }
 .scan-spinner { width: 18px; height: 18px; border: 2px solid #b9d3bf; border-top-color: #487858; border-radius: 50%; animation: scan-spin .8s linear infinite; }
 @keyframes scan-spin { to { transform: rotate(360deg); } }
 .review-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-bottom: 12px; }

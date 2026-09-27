@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from dotenv import load_dotenv
@@ -193,7 +193,9 @@ class Review:
         self.by_id: dict[int, dict[str, Any]] = {}
         self.next_id = 1
         self.lock = threading.RLock()
-        self.scan: dict[str, Any] = {"state": "idle", "source": None, "scanned_files": 0, "found_media": 0, "error": None}
+        self.scan: dict[str, Any] = {"state": "idle", "source": None, "scanned_files": 0,
+                                     "found_media": 0, "error": None, "stop_requested": False}
+        self.stop_scan = threading.Event()
         self.batch: dict[str, Any] = {"state": "idle", "total": 0, "done": 0, "failed": 0,
                                       "last_error": None, "failures": []}
         self.stop_batch = False
@@ -350,8 +352,13 @@ def captured_at(path: Path, kind: str, mtime: float) -> datetime:
     return datetime.fromtimestamp(mtime)
 
 
-def scan_folder(folder: Path, progress: Any = None,
-                year_correction: tuple[int, int] | None = None) -> list[dict[str, Any]]:
+class ScanStopped(Exception):
+    pass
+
+
+def scan_folder(folder: Path, progress: Callable[[int, int], None] | None = None,
+                year_correction: tuple[int, int] | None = None,
+                should_stop: Callable[[], bool] | None = None) -> list[dict[str, Any]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     scanned = 0
     found = 0
@@ -360,9 +367,13 @@ def scan_folder(folder: Path, progress: Any = None,
         fail(f"Could not read selected folder: {error.strerror}")
 
     for current, dirs, files in os.walk(folder, topdown=True, followlinks=False, onerror=read_error):
+        if should_stop and should_stop():
+            raise ScanStopped()
         parent = Path(current)
         dirs[:] = [name for name in dirs if visible(name) and not (parent / name).is_symlink()]
         for name in files:
+            if should_stop and should_stop():
+                raise ScanStopped()
             scanned += 1
             if progress and scanned % 100 == 0:
                 progress(scanned, found)
@@ -393,6 +404,8 @@ def scan_folder(folder: Path, progress: Any = None,
                 "_path": path, "_mtime_ns": meta.st_mtime_ns,
             })
             found += 1
+    if should_stop and should_stop():
+        raise ScanStopped()
     if progress:
         progress(scanned, found)
     return [{
@@ -633,8 +646,11 @@ def create_app(settings: Settings) -> FastAPI:
                 root = root_path(review.photo_root)
                 folder = chosen_folder(root, request.source)
             review.scan = {"state": "running", "source": request.source, "scanned_files": 0,
-                           "found_media": 0, "error": None, "_started_at": time.monotonic(),
+                           "found_media": 0, "error": None, "stop_requested": False,
+                           "_started_at": time.monotonic(),
                            "_finished_at": None}
+            stop_scan = threading.Event()
+            review.stop_scan = stop_scan
 
         def progress(scanned: int, found: int) -> None:
             with review.lock:
@@ -645,8 +661,10 @@ def create_app(settings: Settings) -> FastAPI:
             try:
                 rule = settings.date_year_correction
                 correction = (rule[1], rule[2]) if rule and folder == root / rule[0] else None
-                days = scan_folder(folder, progress, correction)
+                days = scan_folder(folder, progress, correction, stop_scan.is_set)
                 with review.lock:
+                    if stop_scan.is_set():
+                        raise ScanStopped()
                     review.photo_root = root
                     review.scanned_folder = folder
                     if review.picked_folder == picked:
@@ -660,10 +678,15 @@ def create_app(settings: Settings) -> FastAPI:
                     review.by_id = {day["id"]: day for day in days}
                     review.scan["state"] = "complete"
                     review.scan["_finished_at"] = time.monotonic()
+            except ScanStopped:
+                with review.lock:
+                    review.scan["state"] = "stopped"
+                    review.scan["_finished_at"] = time.monotonic()
             except Exception as error:
                 with review.lock:
-                    review.scan["state"] = "error"
-                    review.scan["error"] = error.detail if isinstance(error, HTTPException) else "Scan failed"
+                    review.scan["state"] = "stopped" if stop_scan.is_set() else "error"
+                    if not stop_scan.is_set():
+                        review.scan["error"] = error.detail if isinstance(error, HTTPException) else "Scan failed"
                     review.scan["_finished_at"] = time.monotonic()
 
         threading.Thread(target=work, daemon=True).start()
@@ -672,6 +695,15 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/scan/status")
     def scan_status() -> dict[str, Any]:
         with review.lock:
+            return job_status(review.scan, review.scan["scanned_files"])
+
+    @app.post("/api/scan/stop")
+    def stop_scan() -> dict[str, Any]:
+        with review.lock:
+            if review.scan["state"] != "running":
+                fail("No scan is running", 409)
+            review.scan["stop_requested"] = True
+            review.stop_scan.set()
             return job_status(review.scan, review.scan["scanned_files"])
 
     @app.get("/api/days")

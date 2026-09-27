@@ -74,4 +74,18 @@ test("선택한 폴더를 날짜별로 검토하고 승인 후에만 이동한�
   expect(existsSync(outside)).toBeTruthy();
   expect(existsSync(original)).toBeFalsy();
   expect((await request.get(imageSource!)).status()).toBe(400);
+
+  await page.getByRole("button", { name: "cancel", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "선택한 폴더 스캔" }).click();
+  await expect(page.getByRole("button", { name: "스캔 중단" })).toBeVisible();
+  await expect.poll(async () => {
+    const response = await request.get("http://127.0.0.1:8042/api/scan/status");
+    return (await response.json()).scanned_files;
+  }).toBeGreaterThanOrEqual(100);
+  await page.getByRole("button", { name: "스캔 중단" }).click();
+  await expect(page.getByText("스캔을 중단했습니다. 이전 검토 목록은 그대로입니다.")).toBeVisible();
+  await expect(page.locator(".date-item")).toHaveCount(3);
+  await expect(page.locator(".date-item").filter({ hasText: "2026년 4월 10일" })).toContainText("이동 완료");
+  expect(existsSync(join(root, "cancel", "photo-0249.jpg"))).toBeTruthy();
 });

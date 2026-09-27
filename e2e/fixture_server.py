@@ -3,11 +3,13 @@ from __future__ import annotations
 import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import uvicorn
 from PIL import Image
 
+import engine.main as engine_main
 from engine.main import Settings, create_app
 
 
@@ -31,6 +33,26 @@ def main() -> None:
             str(root / "mixed" / "DJI_20000412103000_0004_D.MP4"),
         ], check=True)
         photo(root / "outside" / "private.jpg", "2026:04:11 12:00:00")
+        cancel_folder = root / "cancel"
+        cancel_folder.mkdir()
+        cancel_folder = cancel_folder.resolve()
+        sample = (root / "mixed" / "DJI_20000410100000_0001_D.JPG").read_bytes()
+        for index in range(250):
+            (cancel_folder / f"photo-{index:04}.jpg").write_bytes(sample)
+
+        scan_folder = engine_main.scan_folder
+
+        def slow_scan(folder: Path, progress=None, year_correction=None, should_stop=None):
+            if folder != cancel_folder:
+                return scan_folder(folder, progress, year_correction, should_stop)
+
+            def pause() -> bool:
+                time.sleep(0.02)
+                return should_stop() if should_stop else False
+
+            return scan_folder(folder, progress, year_correction, pause)
+
+        engine_main.scan_folder = slow_scan
         app = create_app(Settings(
             photo_root=root,
             home_settings=root / ".home.json",

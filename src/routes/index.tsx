@@ -49,11 +49,12 @@ type DayPage = {
 };
 type FilePage = { day: Day; items: Media[]; page: number; total: number };
 type Scan = {
-  state: "idle" | "running" | "complete" | "error";
+  state: "idle" | "running" | "stopped" | "complete" | "error";
   source: string | null;
   scanned_files: number;
   found_media: number;
   error: string | null;
+  stop_requested: boolean;
   elapsed_seconds: number;
   rate_per_second: number;
 };
@@ -302,6 +303,8 @@ function Home() {
           }
           if (next.state === "error")
             setError(next.error ?? "스캔에 실패했습니다.");
+          if (next.state === "stopped")
+            setNotice("스캔을 중단했습니다. 이전 검토 목록은 그대로입니다.");
         })
         .catch((cause) => setError(cause.message));
     }, 900);
@@ -443,9 +446,16 @@ function Home() {
         scanned_files: 0,
         found_media: 0,
         error: null,
+        stop_requested: false,
         elapsed_seconds: 0,
         rate_per_second: 0,
       });
+    });
+  }
+
+  function stopScan() {
+    void run("stop-scan", async () => {
+      setScan(await api<Scan>("/api/scan/stop", {}));
     });
   }
 
@@ -573,7 +583,13 @@ function Home() {
           <details className="source-picker" open>
             <summary className="source-summary">
               <strong>
-                {(list?.total_days ?? 0) > 0
+                {scan?.state === "stopped"
+                  ? (list?.total_days ?? 0) > 0
+                    ? "스캔 중단됨 · 이전 검토 목록 유지"
+                    : "스캔 중단됨"
+                  : scan?.state === "running"
+                  ? `${scan.source} 스캔 중`
+                  : (list?.total_days ?? 0) > 0
                   ? `스캔한 폴더: ${scan?.source ?? "선택한 폴더"}`
                   : "정리할 폴더 선택"}
               </strong>
@@ -612,13 +628,17 @@ function Home() {
                 <div className="scan-progress" role="status">
                   <span className="scan-spinner" />
                   <span>
-                    <b>{scan.source} 스캔 중</b>
+                    <b>{scan.source} {scan.stop_requested ? "중단 중" : "스캔 중"}</b>
                     <small>
                       확인한 파일 {num(scan.scanned_files)}개 · 찾은 미디어{" "}
                       {num(scan.found_media)}개 · 평균 {rate(scan.rate_per_second ?? 0)}파일/초
                       {scan.elapsed_seconds > 0 ? ` · ${scan.elapsed_seconds.toFixed(1)}초 경과` : ""}
                     </small>
                   </span>
+                  <button type="button" className="button button-secondary scan-stop"
+                    onClick={stopScan} disabled={scan.stop_requested || busy === "stop-scan"}>
+                    {scan.stop_requested || busy === "stop-scan" ? "중단 중…" : "스캔 중단"}
+                  </button>
                 </div>
               )}
             </div>
